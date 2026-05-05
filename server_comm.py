@@ -61,7 +61,7 @@ class ServerComm:
             # Configurar timeout en segundos
             self._sock.settimeout(timeout_ms / 1000.0)
             datos = self._sock.recv(self.TAM_BUFFER)  # recibir datos
-            if datos:
+            if datos: #Si la variable datos tiene datos sucede, en caso contrario es como un False
                 return datos.decode('utf-8').strip()  # decodificar y limpiar
             return ''
         except OSError:
