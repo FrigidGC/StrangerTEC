@@ -1,80 +1,76 @@
-# Cliente TCP que mantiene la conexion con el servidor PC.
+# Modulo de comunicacion con la PC via USB serie.
+# Reemplaza la conexion TCP/WiFi original.
+#
 # Todos los mensajes son texto plano en UTF-8 terminados en \n.
+# Usa sys.stdin y sys.stdout, que en el Pico W apuntan
+# directamente al puerto USB CDC cuando esta conectado a la PC.
+#
+# Protocolo TCP (mensajes de texto plano):
+#   PICO -> PC   "LISTO"              Pico listo para jugar
+#   PICO -> PC   "MODO:SIMPLE"        Informa el modo activo
+#   PICO -> PC   "MODO:ESCUCHA"       Informa el modo activo
+#   PC   -> PICO "FRASE:<texto>"      PC envia la frase
+#   PICO -> PC   "MORSE:<texto>"      Pico envia la frase seleccionada
+#                                     para Modo Simple
+#   PICO -> PC   "RESP:<texto>"       Respuesta del jugador B
+#   PC   -> PICO "PUNTAJE:<n>"        Puntaje calculado por el PC
+#   PC   -> PICO "INICIO"             Senial de inicio de transmision
+# ============================================================
 
-import socket
-import time
+import sys
+import select
 
 
 class ServerComm:
-    """Conexion TCP con el servidor en la PC."""
+    """Comunicacion USB serie con la PC (reemplaza TCP/WiFi)."""
 
-    TAM_BUFFER = 1024  # bytes maximos por mensaje
+    def __init__(self):
+        # Crear objeto poll reutilizable para lecturas con timeout
+        # select.poll() sobre sys.stdin permite esperar datos
+        # durante un tiempo maximo sin bloquear el programa
+        self._poll = select.poll()
+        self._poll.register(sys.stdin, select.POLLIN)
 
-    def __init__(self, ip, puerto):
-        self._ip     = ip      # IP del servidor PC
-        self._puerto = puerto  # puerto TCP del servidor
-        self._sock   = None    # socket de conexion (None = desconectado)
-
-    def conectar(self, reintentos=3):
+    def conectar(self):
         """
-        Intenta conectarse al servidor.
-        Devuelve True si logra conectarse, False si falla.
+        La conexion USB serie ya esta activa al arrancar el Pico.
+        No se requiere ninguna accion adicional.
+        Siempre devuelve True.
         """
-        for intento in range(1, reintentos + 1):
-            try:
-                # Crear nuevo socket TCP
-                self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                self._sock.connect((self._ip, self._puerto))  # conectar al servidor
-                print("Conectado al servidor", self._ip, ":", self._puerto)
-                return True
-            except Exception as e:
-                print("Intento", intento, "/", reintentos, "fallido:", e)
-                self.cerrar()   # limpiar socket fallido
-                time.sleep(1)   # esperar 1 segundo antes de reintentar
-        return False
+        print("Comm: USB serie lista")
+        return True
 
     def enviar(self, mensaje):
         """
-        Envia un mensaje de texto al servidor.
-        Se agrega \n al final como terminador de linea.
-        Devuelve True si el envio fue exitoso.
+        Envia un mensaje de texto al PC via USB serie.
+        Se agrega \\n al final como terminador de linea.
+        Devuelve True si el envio fue exitoso, False si falla.
         """
-        if self._sock is None:
-            print("Error: no hay conexion activa")
-            return False
         try:
-            # Codificar el mensaje a bytes y enviarlo
-            self._sock.sendall((mensaje + '\n').encode('utf-8'))
+            # sys.stdout.write() envia directamente al puerto USB
+            sys.stdout.write(mensaje + '\n')
             return True
         except Exception as e:
-            print("Error al enviar:", e)
+            print("Comm: error al enviar:", e)
             return False
 
     def recibir(self, timeout_ms=8000):
         """
-        Espera un mensaje del servidor con timeout.
-        Devuelve el texto recibido (sin el \n), o '' si falla.
+        Espera un mensaje del PC con timeout via USB serie.
+        Devuelve el texto recibido (sin el \\n), o '' si vence el tiempo.
+        El argumento timeout_ms indica cuantos milisegundos esperar.
         """
-        if self._sock is None:
-            return ''
         try:
-            # Configurar timeout en segundos
-            self._sock.settimeout(timeout_ms / 1000.0)
-            datos = self._sock.recv(self.TAM_BUFFER)  # recibir datos
-            if datos:
-                return datos.decode('utf-8').strip()  # decodificar y limpiar
-            return ''
-        except OSError:
-            return ''  # timeout o socket cerrado
+            # poll.poll() bloquea hasta que haya datos o se agote el tiempo
+            resultado = self._poll.poll(timeout_ms)
+            if resultado:
+                linea = sys.stdin.readline()  # leer una linea completa
+                return linea.strip() if linea else ''
+            return ''  # tiempo agotado sin recibir datos
         except Exception as e:
-            print("Error al recibir:", e)
+            print("Comm: error al recibir:", e)
             return ''
 
     def cerrar(self):
-        """Cierra el socket de forma segura."""
-        if self._sock:
-            try:
-                self._sock.close()
-            except Exception:
-                pass  # ignorar errores al cerrar
-            self._sock = None
+        """No hay socket que cerrar en USB serie."""
+        pass
