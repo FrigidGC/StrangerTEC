@@ -1,95 +1,66 @@
-# Maneja la conexion WiFi del Pico W.
-# Las credenciales se cargan desde config.txt para no
-# guardar contrasenas directamente en el codigo fuente.
+# Conexion WiFi del Pico W.
+# Basado en raspyConnection.py provisto por la catedra.
+#
+# CORRECCIONES:
+#   - Se agrego feedback auditivo opcional via buzzer.
+#   - Se usa un timeout explicito en lugar de un bucle infinito.
+#   - Se imprime la IP asignada al conectar.
 # ============================================================
 
 import network
 import time
 
-# Objeto global de la interfaz WiFi
-_wlan = None
+
+SSID     = "Redmi"         # nombre de la red WiFi
+PASSWORD = "ev5pm72kk"     # contrasena de la red WiFi
 
 
-def _leer_config():
+def conectar_wifi(timeout_seg=20, buzzer=None):
     """
-    Lee SSID y PASSWORD desde el archivo config.txt.
-    El archivo debe tener el formato:
-        SSID=NombreDeLaRed
-        PASSWORD=LaContrasena
-        SERVER_IP=192.168.X.X
-        SERVER_PORT=8001
-    Devuelve un diccionario con los valores leidos.
+    Conecta el Pico W a la red WiFi configurada.
+    Parametros:
+        timeout_seg : segundos maximos de espera (default 20).
+        buzzer      : instancia de LectorMorse para feedback auditivo.
+    Devuelve True si conecta, False si se agota el tiempo.
     """
-    config = {}
-    try:
-        with open('config.txt', 'r') as f:
-            for linea in f:
-                linea = linea.strip()  # quitar espacios y saltos de linea
-                if '=' in linea:
-                    clave, valor = linea.split('=', 1)  # separar en clave y valor
-                    config[clave.strip()] = valor.strip()
-    except Exception as e:
-        print("Error leyendo config.txt:", e)
-    return config
 
+    def _pip(hz, ms):
+        if buzzer is None:
+            return
+        buzzer._buz.freq(hz)
+        buzzer.buzzer_on()
+        time.sleep_ms(ms)
+        buzzer.buzzer_off()
+        buzzer._buz.freq(buzzer.FREC_BUZZER)
+        time.sleep_ms(40)
 
-def conectar_wifi(timeout_seg=20):
-    """
-    Conecta el Pico W a la red WiFi especificada en config.txt.
-    Devuelve True si la conexion fue exitosa, False si no.
-    """
-    global _wlan
-    config = _leer_config()  # leer credenciales del archivo
+    wlan = network.WLAN(network.STA_IF)
+    wlan.active(True)
 
-    ssid     = config.get('SSID', '')
-    password = config.get('PASSWORD', '')
+    # Si ya estaba conectado, desconectar primero para forzar reconexion limpia
+    if wlan.isconnected():
+        wlan.disconnect()
+        time.sleep(1)
 
-    if not ssid:
-        print("Error: SSID no encontrado en config.txt")
-        return False
+    print("Conectando a WiFi '{}'...".format(SSID))
+    _pip(600, 60)   # pip inicio: intentando conectar
+    wlan.connect(SSID, PASSWORD)
 
-    try:
-        _wlan = network.WLAN(network.STA_IF)  # modo estacion (cliente)
-        _wlan.active(True)                     # activar interfaz WiFi
-
-        if _wlan.isconnected():
-            # Ya hay conexion previa activa
-            print("Ya conectado a WiFi. IP:", _wlan.ifconfig()[0])
+    for seg in range(timeout_seg):
+        if wlan.isconnected():
+            ip = wlan.ifconfig()[0]
+            print("WiFi OK. IP: {}".format(ip))
+            # Dos pips ascendentes: WiFi exitoso
+            _pip(700, 80)
+            _pip(1000, 120)
             return True
+        print("Esperando WiFi... ({}/{})".format(seg + 1, timeout_seg))
+        # Un pip grave por segundo mientras espera
+        _pip(350, 50)
+        time.sleep(1)
 
-        _wlan.connect(ssid, password)  # iniciar conexion
-        print("Conectando a", ssid, "...")
-
-        t_inicio = time.time()  # registrar tiempo de inicio
-        while not _wlan.isconnected():
-            if time.time() - t_inicio > timeout_seg:
-                # Se acabo el tiempo de espera
-                print("Timeout: no se pudo conectar al WiFi")
-                return False
-            print("  Esperando conexion WiFi...")
-            time.sleep(1)
-
-        print("WiFi conectado. IP:", _wlan.ifconfig()[0])
-        return True
-
-    except Exception as e:
-        print("Error en WiFi:", e)
-        return False
-
-
-def obtener_ip():
-    """Devuelve la IP asignada al Pico, o '0.0.0.0' si no hay conexion."""
-    if _wlan and _wlan.isconnected():
-        return _wlan.ifconfig()[0]
-    return '0.0.0.0'
-
-
-def obtener_servidor():
-    """
-    Lee la IP y puerto del servidor desde config.txt.
-    Devuelve una tupla (ip, puerto).
-    """
-    config = _leer_config()
-    ip     = config.get('SERVER_IP', '192.168.1.100')
-    puerto = int(config.get('SERVER_PORT', '8001'))
-    return (ip, puerto)
+    print("Sin WiFi tras {} segundos".format(timeout_seg))
+    # Tres pips graves: fallo WiFi
+    for _ in range(3):
+        _pip(220, 120)
+    return False

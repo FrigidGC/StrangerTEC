@@ -1,102 +1,79 @@
 # Punto de entrada del sistema empotrado.
-# Lee el DIP-switch para elegir el modo de juego,
-# inicializa el hardware y arranca el bucle del juego.
+# Lee el DIP-switch, conecta WiFi, abre socket TCP y arranca el juego.
+# Basado en raspyConnection.py provisto por la catedra.
 #
-# Pines del hardware (segun diagrama):
-#   GP26 --> CLK  de los 74HC164 (en paralelo IC1 e IC2)
-#   GP27 --> A/B  del IC1 (entrada de datos)
-#   CLR  --> VCC (fijo, no se controla por software)
-#   GP13 --> LED14 (fila 1: A,C,E,G,I,K,M,O,Q,S,U,W,Y)
-#   GP14 --> LED15 (fila 2: B,D,F,H,J,L,N,P,R,T,V,X,Z)
-#   GP15 --> LED16 (fila 3: 0,1,2,3,4,5,6,7,8,9,-,+)
-#   GP16 --> Boton Morse S1 (PULL_DOWN, activo en ALTO)
-#   GP11 --> DIP-switch S2 (PULL_DOWN, activo en ALTO)
-#   GP5  --> Buzzer LS1 (PWM)
+# Pines:
+#   GP26 --> CLK 74HC164      GP27 --> DATA 74HC164
+#   GP13 --> Fila1 LEDs       GP14 --> Fila2 LEDs    GP15 --> Fila3 LEDs
+#   GP16 --> Boton Morse S1   GP18 --> DIP-switch S2  GP5  --> Buzzer PWM
 #
-# Modos de juego (DIP-switch S2):
-#   OFF (0) = Modo Transmision Simple
-#   ON  (1) = Modo Escucha y Transmision
+# DIP-switch S2: OFF=Transmision Simple  ON=Escucha y Transmision
+#
+# CAMBIOS respecto a la version anterior:
+#   - Se pasa la instancia de LectorMorse a wifi_manager y ServerComm
+#     para que puedan emitir feedback auditivo durante la conexion.
+#   - Se usa el buzzer para indicar error fatal al usuario.
 # ============================================================
 
 import machine
 import time
-import _thread
-import network
-import socket
 
-# Modulos propios del proyecto
-from wifi_manager import conectar_wifi, obtener_servidor
 from led_panel    import PanelLEDs
 from morse_input  import LectorMorse
 from game_logic   import Juego, UNIDAD_A_MS
+from wifi_manager import conectar_wifi
 from server_comm  import ServerComm
 
-# ── Asignacion de pines (ajustar si el cableado difiere) ──
-PIN_CLK    = 26   # reloj del 74HC164
-PIN_DATA   = 27   # datos del 74HC164
-PIN_FILA1  = 13   # LED14, fila 1 del panel
-PIN_FILA2  = 14   # LED15, fila 2 del panel
-PIN_FILA3  = 15   # LED16, fila 3 del panel
-PIN_BOTON  = 16   # boton Morse S1
-PIN_DIP    = 11   # DIP-switch S2 (modo de juego)
-PIN_BUZZER = 5    # buzzer pasivo LS1 (PWM)
+# ── Pines ─────────────────────────────────────────────────────
+PIN_CLK    = 26
+PIN_DATA   = 27
+PIN_FILA1  = 13
+PIN_FILA2  = 14
+PIN_FILA3  = 15
+PIN_BOTON  = 16
+PIN_DIP    = 18
+PIN_BUZZER = 5
+
+
+def _beep_error_fatal(morse):
+    """Tres pips graves: error de inicio irrecuperable."""
+    for _ in range(3):
+        morse._buz.freq(220)
+        morse.buzzer_on()
+        time.sleep_ms(150)
+        morse.buzzer_off()
+        time.sleep_ms(100)
+    morse._buz.freq(morse.FREC_BUZZER)
 
 
 def main():
-    print("==============================")
-    print(" StrangerTEC Morse Translator ")
-    print("==============================")
+    print("--- StrangerTEC Morse Translator ---")
 
-    # ── 1. Leer el modo de juego desde el DIP-switch ──
+    # 1. Leer modo de juego desde el DIP-switch
     dip = machine.Pin(PIN_DIP, machine.Pin.IN, machine.Pin.PULL_DOWN)
-    modo_simple = dip.value() == 0  # OFF=Transmision Simple, ON=Escucha
-    if modo_simple:
-        print("Modo: Transmision Simple (DIP OFF)")
-    else:
-        print("Modo: Escucha y Transmision (DIP ON)")
+    modo_simple = dip.value() == 0   # OFF=Simple, ON=Escucha
+    print("Modo:", "Simple" if modo_simple else "Escucha")
 
-    # ── 2. Inicializar panel de LEDs ──
-    panel = PanelLEDs(
-        pin_clk  = PIN_CLK,
-        pin_data = PIN_DATA,
-        pin_row1 = PIN_FILA1,
-        pin_row2 = PIN_FILA2,
-        pin_row3 = PIN_FILA3,
-    )
-    panel.apagar_todo()  # asegurarse de que todo este apagado
+    # 2. Inicializar hardware
+    panel = PanelLEDs(PIN_CLK, PIN_DATA, PIN_FILA1, PIN_FILA2, PIN_FILA3)
+    panel.apagar_todo()
+    morse = LectorMorse(PIN_BOTON, PIN_BUZZER, UNIDAD_A_MS)
 
-    # ── 3. Inicializar lector Morse y buzzer ──
-    morse = LectorMorse(
-        pin_boton  = PIN_BOTON,
-        pin_buzzer = PIN_BUZZER,
-        unidad_ms  = UNIDAD_A_MS,  # se puede cambiar a UNIDAD_B_MS
-    )
+    # 3. Conectar WiFi — pasa el buzzer para feedback auditivo
+    if not conectar_wifi(buzzer=morse):
+        print("Sin WiFi: no se puede iniciar")
+        _beep_error_fatal(morse)
+        return
 
-    # ── 5. Conectar WiFi y servidor PC ──
-    comm = None
-    print("Conectando a WiFi...")
-    ok_wifi = conectar_wifi()
+    # 4. Conectar al servidor PC via TCP — pasa el buzzer para feedback
+    comm = ServerComm(buzzer=morse)
+    if not comm.conectar():
+        print("Sin TCP: no se puede iniciar")
+        _beep_error_fatal(morse)
+        return
 
-    if ok_wifi:
-        servidor_ip, servidor_puerto = obtener_servidor()
-        comm = ServerComm(servidor_ip, servidor_puerto)
-        ok_srv = comm.conectar()  # intentar conectar al PC
-        if not ok_srv:
-            # No se pudo conectar al PC, jugar en modo local
-            print("Sin servidor: juego en modo local")
-            comm = None
-    else:
-        print("Sin WiFi: juego en modo local")
-
-    # ── 6. Iniciar el juego ──
-    juego = Juego(
-        panel       = panel,
-        morse       = morse,
-        comm        = comm,
-        modo_simple = modo_simple,
-    )
-    juego.iniciar()  # bucle infinito del juego
+    # 5. Iniciar el juego
+    Juego(panel, morse, comm, modo_simple).iniciar()
 
 
-# Ejecutar al arrancar el Pico
-    main()
+main()
