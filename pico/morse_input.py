@@ -121,10 +121,16 @@ class LectorMorse:
 
     # ── Lectura de una frase ─────────────────────────────
 
-    def leer_frase(self, max_chars=16):
+    def leer_frase(self, max_chars=16, on_letra=None):
         """
         Acumula letras hasta detectar un silencio de 7 unidades
         (fin de frase) o alcanzar el maximo de caracteres.
+
+        Si se pasa on_letra (una funcion), se llama con cada
+        caracter valido apenas se decodifica, ademas de
+        agregarlo a la frase. Esto es lo que usa el modulo
+        del incrementador en 5 para procesar cada digito al
+        momento, sin esperar a que termine la frase completa.
         """
         frase = ""  # resultado acumulado
 
@@ -139,6 +145,8 @@ class LectorMorse:
                 frase += ' '  # fue espacio entre palabras
             elif letra != '?':
                 frase += letra  # agregar letra valida
+                if on_letra:
+                    on_letra(letra)
 
         return frase.strip()  # quitar espacios al inicio y fin
 
